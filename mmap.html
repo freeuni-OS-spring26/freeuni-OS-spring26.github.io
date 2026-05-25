@@ -5,254 +5,213 @@
 </head>
 
 <body bgcolor="#ffffff" text="#000000" style="">
+
 <!-- START SECTION: body -->
-<h1>Lab: file system</h1>
+<h1>Lab: mmap <script>g("hard")</script>(<a class="hard" href="https://pdos.csail.mit.edu/6.S081/2025/labs/guidance.html">hard</a>)</h1>
 
-<p>In this lab you will add large files and symbolic links to the xv6
-  file system.
+The <tt>mmap</tt> and <tt>munmap</tt> system calls allow UNIX programs
+to exert detailed control over their address spaces. They can be used
+to share memory among processes, to map files into process address
+spaces, and as part of user-level page fault schemes such as the
+garbage-collection algorithms discussed in lecture.
+In this lab you'll add <tt>mmap</tt> and <tt>munmap</tt>
+to xv6, focusing on memory-mapped files.
 
-</p><div class="lab-prereq">
-<p>Before writing code, you should read "Chapter 10:
-  File system" from the <a href="https://pdos.csail.mit.edu/6.S081/2025/xv6/book-riscv-rev5.pdf">xv6
-  book</a> and study the corresponding code.
-</p></div>
-
-<p>Fetch the xv6 source for the lab and check out the <tt>util</tt> branch:
+<p>Fetch the xv6 source for the lab and check out the <tt>mmap</tt> branch:
 
 </p><pre>  $ <kbd>git fetch</kbd>
-  $ <kbd>git checkout fs</kbd>
+  $ <kbd>git checkout mmap</kbd>
   $ <kbd>make clean</kbd>
 </pre>
 
-<h2>Large files <script>g("moderate")</script>(<a class="moderate" href="https://pdos.csail.mit.edu/6.S081/2025/labs/guidance.html">moderate</a>)</h2>
-
-<p>In this assignment you'll increase the maximum size of an xv6
-file. Currently xv6 files are limited to 268 blocks, or 268*BSIZE
-bytes (BSIZE is 1024 in xv6). This limit comes from the fact that an
-xv6 inode contains 12 "direct" block numbers and one "singly-indirect"
-block number, which refers to a block that holds up to 256 more block
-  numbers, for a total of 12+256=268 blocks.
-
-</p><p>The <tt>bigfile</tt> command creates the longest file it can,
-and reports that size:
-</p><pre>$ bigfile
-..
-wrote 268 blocks
-bigfile: file is too small
-$
-</pre>
-The test fails because <tt>bigfile</tt> expects to be able
-to create a file with 65803 blocks, but unmodified xv6 limits
-files to 268 blocks.
-
-<p>You'll change the xv6 file system code to support a
-"doubly-indirect" block in each inode, containing 256 addresses of
-singly-indirect blocks, each of which can contain up to 256 addresses
-of data blocks. The result will be that a file will be able to consist
-of up to 65803 blocks, or 256*256+256+11 blocks (11 instead of 12, because we will
-sacrifice one of the direct block numbers for the double-indirect
-block).
-
-</p><h3>Preliminaries</h3>
-
-The <tt>mkfs</tt> program creates the xv6 file system disk image
-and determines
-how many total blocks the file system has; this size is controlled by
-<tt>FSSIZE</tt> in <tt>kernel/param.h</tt>.
-You'll see that <tt>FSSIZE</tt> in the repository for
-this lab is set to
-200,000 blocks.  You should see the following output from <tt>mkfs/mkfs</tt>
-in the make output:
-<pre>nmeta 71 (boot, super, log blocks 31, inode blocks 13, bitmap blocks 25) blocks 199929 total 200000
-</pre>
-This line describes the file system that <tt>mkfs/mkfs</tt> built: it
-has 71 meta-data blocks (blocks used to describe the file system) and
-199,929 data blocks, totaling 200,000 blocks.
-<br>
-
-<p>Note that <tt>make qemu</tt> builds a new <tt>fs.img</tt>, and
-saves the old one in <tt>fs.img.bk</tt>. If you want to run xv6 with
-the existing <tt>fs.img</tt> instead of building a new one,
-run <tt>make qemu-fs</tt>.
-
-</p><h3>What to Look At</h3>
-
-The format of an on-disk inode is defined by <tt>struct dinode</tt>
-in <tt>fs.h</tt>. You're particularly interested in <tt>NDIRECT</tt>,
-<tt>NINDIRECT</tt>, <tt>MAXFILE</tt>, and the <tt>addrs[]</tt> element
-of <tt>struct dinode</tt>. Look at Figure 10.3 in the xv6 text for a
-diagram of the standard xv6 inode.
-
 <p>
-The code that finds a file's data on disk is in <tt>bmap()</tt>
-in <tt>fs.c</tt>. Have a look at it and make sure you understand
-what it's doing. <tt>bmap()</tt> is called both when reading and
-writing a file. When writing, <tt>bmap()</tt> allocates new
-blocks as needed to hold file content, as well as allocating
-an indirect block if needed to hold block addresses.
+The manual page
+(run <kbd>man 2 mmap</kbd>) shows this declaration for <tt>mmap</tt>:
+</p><pre>void *mmap(void *addr, size_t len, int prot, int flags,
+           int fd, off_t offset);
+</pre>
+<p>
+<tt>mmap</tt> can be called in many ways,
+but this lab requires only
+a subset of its features relevant to memory-mapping a file.
+You can assume that
+<tt>addr</tt> will always be zero, meaning that the
+kernel should decide the virtual address at which to map the file.
+<tt>mmap</tt> returns that address, or 0xffffffffffffffff if
+it fails.
+<tt>len</tt> is the number of bytes to map; it might not be
+the same as the file's length.
+<tt>prot</tt> indicates whether the memory should be mapped
+readable, writeable, and/or executable; you can assume 
+that <tt>prot</tt> is <tt>PROT_READ</tt> or <tt>PROT_WRITE</tt>
+or both.
+<tt>flags</tt> will be either <tt>MAP_SHARED</tt>,
+meaning that modifications to the mapped memory should
+be written back to the file, or <tt>MAP_PRIVATE</tt>,
+meaning that they should not. You don't have to implement any
+other bits in <tt>flags</tt>.
+<tt>fd</tt> is the open file descriptor of the file to map.
+You can assume <tt>offset</tt> is zero (it's the starting point
+in the file at which to map).
 
 </p><p>
-<tt>bmap()</tt> deals with two kinds of block numbers. The <tt>bn</tt>
-argument is a "logical block number" -- a block number within the file,
-relative to the start
-of the file. The block numbers in <tt>ip-&gt;addrs[]</tt>, and the
-argument to <tt>bread()</tt>, are disk block numbers.
-You can view <tt>bmap()</tt> as mapping a file's logical
-block numbers into disk block numbers.
+Your implementation should fill
+in the page table lazily, in response to page faults.
+That is, <tt>mmap</tt> itself should not allocate physical memory or
+read the file. Instead, do that in page fault handling code
+in (or called by) <tt>usertrap</tt>, as in the copy-on-write lab.
+The reason to be lazy is to ensure that <tt>mmap</tt> of
+a large file is fast, and that <tt>mmap</tt> of a file larger
+than physical memory is possible.
 
-</p><h3>Your Job</h3>
+</p><p>
+It's OK if processes that map the same <tt>MAP_SHARED</tt>
+file do <b>not</b> share physical pages.
 
-<div class="lab-required">
-Modify <tt>bmap()</tt> so that it implements a doubly-indirect block,
-in addition to direct blocks and a singly-indirect block.  You'll have
-to have only 11 direct blocks, rather than 12, to make room for your
-new doubly-indirect block; you're not allowed to change the size of an
-on-disk inode.  The first 11 elements of <tt>ip-&gt;addrs[]</tt> should
-be direct blocks; the 12th should be a singly-indirect block (just
-like the current one); the 13th should be your new doubly-indirect
-block. You are done with this exercise when <tt>bigfile</tt> writes
-65803 blocks and <tt>usertests -q</tt> runs successfully:
-</div>
-
-<pre>$ <kbd>bigfile</kbd>
-..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
-wrote 65803 blocks
-done; ok
-$ usertests -q
-...
-ALL TESTS PASSED
-$ 
+</p><p>
+The manual page
+(run <kbd>man 2 munmap</kbd>) shows this declaration for <tt>munmap</tt>:
+</p><pre>int munmap(void *addr, size_t len);
 </pre>
-
 <p>
-<tt>bigfile</tt> will take at least a minute and a half to run.
+<tt>munmap</tt> should remove mmap mappings in the
+indicated address range, if any. If the process has modified the memory and
+has it mapped <tt>MAP_SHARED</tt>, the modifications should first be
+written to the file. An <tt>munmap</tt> call might cover only a
+portion of an mmap-ed region, but you can assume that it will either
+unmap at the start, or at the end, or the whole region (but not punch
+a hole in the middle of a region). When a process exits, any
+modifictions it has made to <tt>MAP_SHARED</tt> regions should be
+written to the relevant files, as if the process had called <tt>munmap</tt>.
 
-</p><p>Hints:
-
-</p><ul>
-    
-<li> Make sure you understand <tt>bmap()</tt>. Write out a diagram of the
-relationships between <tt>ip-&gt;addrs[]</tt>, the indirect block, the
-doubly-indirect block and the singly-indirect blocks it points to, and
-data blocks. Make sure you understand why adding a doubly-indirect
-block increases the maximum file size by 256*256 blocks (really -1,
-since you have to decrease the number of direct blocks by one).
-
-</li><li>
-Think about how you'll index the doubly-indirect block, and
-the indirect blocks it points to, with the logical block
-number.
-
-</li><li>If you change the definition of <tt>NDIRECT</tt>, you'll
-probably have to change the declaration of <tt>addrs[]</tt>
-in <tt>struct inode</tt> in <tt>file.h</tt>. Make sure that
-<tt>struct inode</tt> and <tt>struct dinode</tt> have the
-same number of elements in their <tt>addrs[]</tt> arrays.
-
-</li><li>If you change the definition of <tt>NDIRECT</tt>, make sure to create a
-new <tt>fs.img</tt>, since <tt>mkfs</tt> uses <tt>NDIRECT</tt> to build the
-file system.  
-
-</li><li>If your file system gets into a bad state, perhaps by crashing,
-delete <tt>fs.img</tt> (do this from Unix, not xv6).  <tt>make</tt> will build a
-new clean file system image for you.
-
-</li><li>Don't forget to <tt>brelse()</tt> each block that you
-<tt>bread()</tt>.
-
-</li><li>You should allocate indirect blocks and doubly-indirect
-  blocks only as needed, like the original <tt>bmap()</tt>.
-
-</li><li>Make sure <tt>itrunc</tt> frees all blocks of a file, including
-  double-indirect blocks.
-
-</li><li><tt>usertests</tt> takes longer to run than in previous labs
-  because for this lab <tt>FSSIZE</tt> is larger and big files are
-  larger.
-
-</li></ul>
-
-
-<h2>Symbolic links <script>g("moderate")</script>(<a class="moderate" href="https://pdos.csail.mit.edu/6.S081/2025/labs/guidance.html">moderate</a>)</h2>
-
-<p>In this exercise you will add symbolic links to xv6.  Symbolic
-links (or soft links) refer to a linked file or directory
-by pathname; when a
-symbolic link is opened, the kernel looks up the linked-to name.
-Symbolic links resemble hard links, but hard links are
-restricted to pointing to files on the same disk,
-cannot refer to directories,
-and are tied to a specific target i-node rather than (as with
-symbolic links) referring to whatever happens at the moment
-to be at the target name, if anything.
-Implementing this system call is a good exercise to
-understand how pathname lookup works.
-
-</p><p>You do not have to handle symbolic links to directories for this
-lab; the only system call that needs to know how to follow
-symbolic links is <tt>open()</tt>.
-
-</p><h3>Your job</h3>
-
-<div class="lab-required">
-<p>You will implement the <tt>symlink(char *target, char *path)</tt>
-system call, which creates a new symbolic link at path that refers
-to file named by target. For further information, see the man page
-symlink.  To test, add symlinktest to the Makefile and run it. Your
-solution is complete when the tests produce the following output
-(including usertests succeeding).
+</p><div class="lab-required">
+<p>
+You should implement enough <tt>mmap</tt> and <tt>munmap</tt>
+functionality to make the
+<tt>mmaptest</tt> test program work. If <tt>mmaptest</tt>
+doesn't use a <tt>mmap</tt> feature, you don't need to implement
+that feature.
+You must also ensure that <tt>usertests -q</tt> continues to work.
 </p></div>
 
-<pre>$ <kbd>symlinktest</kbd>
-Start: test symlinks
-test symlinks: ok
-Start: test concurrent symlinks
-test concurrent symlinks: ok
-$ usertests -q
+<p>
+When you're done, you should see output similar to this:
+</p><pre>$ <kbd>mmaptest</kbd>
+test basic mmap
+test basic mmap: OK
+test mmap private
+test mmap private: OK
+test mmap read-only
+test mmap read-only: OK
+test mmap read/write
+test mmap read/write: OK
+test mmap dirty
+test mmap dirty: OK
+test not-mapped unmap
+test not-mapped unmap: OK
+test lazy access
+test lazy access: OK
+test mmap two files
+test mmap two files: OK
+test fork
+test fork: OK
+test munmap prevents access
+usertrap(): unexpected scause 0xd pid=7
+            sepc=0x924 stval=0xc0001000
+usertrap(): unexpected scause 0xd pid=8
+            sepc=0x9ac stval=0xc0000000
+test munmap prevents access: OK
+test writes to read-only mapped memory
+usertrap(): unexpected scause 0xf pid=9
+            sepc=0xaf4 stval=0xc0000000
+test writes to read-only mapped memory: OK
+mmaptest: all tests succeeded
+$ <kbd>usertests -q</kbd>
+usertests starting
 ...
 ALL TESTS PASSED
 $ 
 </pre>
- 
-<p>Hints:
 
-</p><ul>
+<p>Here are some hints:
 
-<li> First, create a new system call number for symlink, add an entry
-to user/usys.pl, user/user.h, and implement an empty sys_symlink in kernel/sysfile.c.
+  </p><ul>
+    <li>Start by adding <tt>_mmaptest</tt> to <tt>UPROGS</tt>,
+      and <tt>mmap</tt> and <tt>munmap</tt> system calls, in order to
+      get <tt>user/mmaptest.c</tt> to compile. For now, just return
+      errors from <tt>mmap</tt> and <tt>munmap</tt>.  We defined
+      <tt>PROT_READ</tt> etc for you in <tt>kernel/fcntl.h</tt>.
+      Run <tt>mmaptest</tt>, which will fail at the first mmap call.
+      
+    </li><li>Keep track of what <tt>mmap</tt> has mapped for each process.
+      Define a structure corresponding to the VMA (virtual
+      memory area) described in the "virtual memory for applications" lecture.
+      This should record the address, length, permissions, file, etc.
+      for a virtual memory range created by <tt>mmap</tt>. Since the xv6
+      kernel doesn't have a variable-size memory allocator in the kernel,
+      it's OK to
+      declare a fixed-size array of VMAs and allocate
+      from that array as needed. A size of 16 should be sufficient.
 
-</li><li>Add a new file type (<tt>T_SYMLINK</tt>) to kernel/stat.h to
-represent a symbolic link.
+    </li><li>Implement <tt>mmap</tt>:
+      find an unused region in the process's
+      address space in which to map the file,
+      and add a VMA to the process's
+      table of mapped regions.
+      The VMA should contain a pointer to
+      a <tt>struct file</tt> for the file being mapped; <tt>mmap</tt> should
+      increase the file's reference count so that the structure doesn't
+      disappear when the file is closed (hint:
+      see <tt>filedup</tt>).
+      Run <tt>mmaptest</tt>: the first <tt>mmap</tt> should
+      succeed, but the first access to the mmap-ed memory will 
+      cause a page fault and kill <tt>mmaptest</tt>.
 
-</li><li> Add a new flag to kernel/fcntl.h, (<tt>O_NOFOLLOW</tt>), that can
-be used with the <tt>open</tt> system call. Note that flags passed to
-<tt>open</tt> are combined using a bitwise OR operator, so your new
-flag should not overlap with any existing flags. This will let you
-compile user/symlinktest.c once you add it to the Makefile.
+    </li><li>Add code to cause a page-fault in a mmap-ed region to
+      allocate a page of physical memory, read 4096 bytes of
+      the relevant file into
+      that page, and map it into the user address space.
+      Read the file with <tt>readi</tt>,
+      which takes an offset argument at which to read in the
+      file (but you will have to lock/unlock the inode passed
+      to <tt>readi</tt>).  Don't forget to set the permissions correctly
+      on the page.  Run <tt>mmaptest</tt>; it should get to the
+      first <tt>munmap</tt>.
+      
+    </li><li>Implement <tt>munmap</tt>: find the VMA for the address range and
+      unmap the specified pages (hint: use <tt>uvmunmap</tt>).
+      If <tt>munmap</tt> removes all pages of a
+      previous <tt>mmap</tt>, it should decrement the reference count
+      of the corresponding <tt>struct file</tt>. If an unmapped page
+      has been modified and the file is mapped <tt>MAP_SHARED</tt>,
+      write the page back to the file.
+      Look at <tt>filewrite</tt> for inspiration.
 
-</li><li>Implement the <tt>symlink(target, path)</tt> system call to create
-a new symbolic link at path that refers to target. Note that target
-does not need to exist for the system call to succeed. You will need
-to choose somewhere to store the target path of a symbolic link, for
-example, in the inode's data blocks. <tt>symlink</tt> should return an integer
-representing success (0) or failure (-1) similar to <tt>link</tt> and <tt>unlink</tt>.
+    </li><li>Ideally your implementation would only write back
+      <tt>MAP_SHARED</tt> pages that the program actually modified.
+      The dirty bit (<tt>D</tt>) in the RISC-V PTE indicates whether a
+      page has been written. However, <tt>mmaptest</tt> does not check
+      that non-dirty pages are not written back; thus you can get away
+      with writing pages back without looking at <tt>D</tt> bits.
 
-</li><li>Modify the <tt>open</tt> system call to handle the case where the path
-refers to a symbolic link. If the file does not exist, <tt>open</tt>
-must fail.  When a process specifies <tt>O_NOFOLLOW</tt> in the flags
-to <tt>open</tt>, <tt>open</tt> should open the symlink (and not
-follow the symbolic link).
+    </li><li>Modify <tt>exit</tt> to unmap the process's mapped regions as
+      if <tt>munmap</tt> had been called.
+      Run <tt>mmaptest</tt>; all tests through <tt>test mmap two files</tt>
+      should pass, but probably not <tt>test fork</tt>.
 
-</li><li>If the linked file is also a symbolic link, you must recursively
-follow it until a non-link file is reached. If the links form a cycle,
-you must return an error code. You may approximate this by returning
-an error code if the depth of links reaches some threshold (e.g., 10).
-
-</li><li> Other system calls (e.g., link and unlink) must not
-  follow symbolic links; these system calls operate on the symbolic
-  link itself.
-
-</li></ul>
+    </li><li>Modify <tt>fork</tt> to ensure that the child has the
+    same mapped regions as the parent.
+    Don't
+    forget to increment the reference count for a VMA's <tt>struct
+    file</tt>.  In the page fault handler of the child, it is OK to
+    allocate a new physical page instead of sharing a page with the
+    parent. The latter would be cooler, but it would require more
+    implementation work.  Run <tt>mmaptest</tt>; it should pass
+    all the tests.
+          
+  </li></ul>
+  
+<p>Run <tt>usertests -q</tt> to make sure everything still works.
 
 <!-- START SECTION: submit -->
 <p><a name="submit"></a>
@@ -300,13 +259,56 @@ You can cause <tt>git</tt> to track a new file that you create using
 
 <!-- END SECTION: submit -->
 
-<h2>Optional challenge exercises</h2>
-
-<p>Support triple-indirect blocks.
-
-</p><h3>Acknowledgment</h3>
+  <h2>Optional challenges</h2>
   
-<p>Thanks to the staff of UW's CSEP551 (Fall 2019) for the symlink exercise.
+  <ul>
+    
+    <li>If two processes have the same file mmap-ed (as
+      in the fork tests), share their physical pages. You will need
+      reference counts on physical pages.
+
+    </li><li>Your solution probably allocates a new physical page for each page
+    read from the mmap-ed file, even though the data is also in kernel
+    memory in the buffer cache.  Modify your implementation to use
+    that physical memory, instead of allocating a new page.  This requires that
+    file blocks be the same size as pages (set <tt>BSIZE</tt> to
+    4096).  You will need to pin mmap-ed blocks into the buffer cache.
+    You will need worry about reference counts.
+
+        One benefit of fixing this double-caching is that it also helps
+        make <tt>read()</tt> and <tt>write()</tt> consistent with
+        <tt>mmap</tt>.  That is, if some <tt>mmap</tt>ed file data
+        is modified through the memory mapping, <tt>read</tt> should
+        return those modifications, and likewise, if an application
+        calls <tt>write</tt>, the write should appear in any active
+        memory mappings of that file.  You might find it interesting
+        to read the paper on <a href="https://www.usenix.org/legacy/publications/library/proceedings/usenix2000/freenix/full_papers/silvers/silvers.pdf">the
+        unified buffer cache</a>.
+
+    </li><li>Remove redundancy between your implementation for lazy
+    allocation and your implementation of mmap-ed files.  (Hint:
+    create a VMA for the lazy allocation area.)
+
+    </li><li>Modify <tt>exec</tt> to use a VMA for different sections of
+    the binary so that you get on-demand-paged executables. This will
+    make starting programs faster, because <tt>exec</tt> will not have
+      to read any data from the file system.
+
+    </li><li>Implement page-out and page-in: have
+    the kernel move some parts of processes to disk when
+    physical memory is low.  Then, page in the paged-out memory when
+    the process references it.
+      
+  </li></ul>
+
+<!--  LocalWords:  mmap munmap macOS addr prot fd unmap mmaptest VMA
+ -->
+<!--  LocalWords:  usertests reparent bigdir usertrap allocator VMAs
+ -->
+<!--  LocalWords:  struct filedup readi inode uvmunmap unmapped PTE
+ -->
+<!--  LocalWords:  filewrite VMA's BSIZE executables unmapping
+ -->
 <!-- END SECTION: body -->
 
 </body></html>
