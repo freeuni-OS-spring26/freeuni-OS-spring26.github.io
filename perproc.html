@@ -43,10 +43,10 @@ It may also help to consult the <a href="https://drive.google.com/file/d/17GeetS
 You already wrote a page-table printer, <tt>vmprint()</tt>, in the
 page tables (<tt>pgtbl</tt>) lab, so this exercise is <b>not graded
 here</b> &mdash; the <tt>pte printout</tt> test is worth 0 points.  It
-is kept because <tt>vmprint()</tt> is a valuable debugging tool for the
-rest of this lab, and the question below refers to it.  Reuse your
-printer (adjusting the output format if you like); the format expected
-by <tt>make grade</tt> is described below.
+uses the same output format as the <tt>pgtbl</tt> lab, so you can reuse
+your <tt>vmprint()</tt> as-is; it is kept because it is a valuable
+debugging tool for the rest of this lab, and the question below refers
+to it.
 </div>
 
 <p>
@@ -62,16 +62,16 @@ the page table of the first process at the point when it has just
 finished <tt>exec()</tt>ing <tt>init</tt>:
 
   <pre>page table 0x0000000087f52000
- ..0: pte 0x0000000021fd3801 pa 0x0000000087f4e000
- .. ..0: pte 0x0000000021fd3401 pa 0x0000000087f4d000
- .. .. ..0: pte 0x0000000021fd3c1b pa 0x0000000087f4f000
- .. .. ..1: pte 0x0000000021fd3017 pa 0x0000000087f4c000
- .. .. ..2: pte 0x0000000021fd2c07 pa 0x0000000087f4b000
- .. .. ..3: pte 0x0000000021fd2817 pa 0x0000000087f4a000
- ..255: pte 0x0000000021fd4401 pa 0x0000000087f51000
- .. ..511: pte 0x0000000021fd4001 pa 0x0000000087f50000
- .. .. ..510: pte 0x0000000021fd5807 pa 0x0000000087f56000
- .. .. ..511: pte 0x000000002000180b pa 0x0000000080006000
+ ..0x0000000000000000: pte 0x0000000021fd3801 pa 0x0000000087f4e000
+ .. ..0x0000000000000000: pte 0x0000000021fd3401 pa 0x0000000087f4d000
+ .. .. ..0x0000000000000000: pte 0x0000000021fd3c1b pa 0x0000000087f4f000
+ .. .. ..0x0000000000001000: pte 0x0000000021fd3017 pa 0x0000000087f4c000
+ .. .. ..0x0000000000002000: pte 0x0000000021fd2c07 pa 0x0000000087f4b000
+ .. .. ..0x0000000000003000: pte 0x0000000021fd2817 pa 0x0000000087f4a000
+ ..0x0000003fc0000000: pte 0x0000000021fd4401 pa 0x0000000087f51000
+ .. ..0x0000003fffe00000: pte 0x0000000021fd4001 pa 0x0000000087f50000
+ .. .. ..0x0000003fffffe000: pte 0x0000000021fd5807 pa 0x0000000087f56000
+ .. .. ..0x0000003ffffff000: pte 0x000000002000180b pa 0x0000000080006000
   </pre>
 
 The first line displays the argument to <tt>vmprint</tt>.
@@ -79,16 +79,19 @@ After that there is a line for each PTE, including PTEs that
 refer to page-table pages deeper in the tree.
 Each PTE line is indented by a number of <tt>" .."</tt> that indicates its
 depth in the tree.
-Each PTE line shows the PTE index in its page-table page, the pte bits, and the
+Each PTE line shows the virtual address of the entry, the pte bits, and the
 physical address extracted from the PTE.
 Don't print PTEs that are not valid.  In the above example, the
-top-level page-table page has mappings for entries 0 and 255.  The next
-level down for entry 0 has only index 0 mapped, and the bottom-level
-for that index 0 has entries 0, 1, 2, and 3 mapped.
+top-level page-table page has mappings for virtual-address ranges
+starting at <tt>0x0</tt> and <tt>0x3fc0000000</tt>.  The bottom level of
+the first of these has the four user pages at virtual addresses
+<tt>0x0</tt>, <tt>0x1000</tt>, <tt>0x2000</tt>, and <tt>0x3000</tt>; the
+last two lines are the trapframe and trampoline pages near the top of
+the address space.
 
 <p>
 Your code might emit different physical addresses than those shown above.
-The number of entries and the indices should be the same.
+The number of entries and the virtual addresses should be the same.
 </p>
 
 <p>Some hints:
@@ -291,9 +294,8 @@ number of hours you spent on the lab.
 
 </p><h3>Answers</h3>
 
-<p>Write up your answers to this lab's questions in
-<tt>answers-perproc.txt</tt>.
-<kbd>git add</kbd> and <kbd>git commit</kbd> the file.
+<p>If this lab had questions, write up your answers in <tt>answers-*.txt</tt>.
+<kbd>git add</kbd> and <kbd>git commit</kbd> these files.
 
 </p><h3>Submit</h3>
 
